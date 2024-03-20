@@ -424,7 +424,7 @@ fn pose_file_handler(req: Request) -> Response {
     let file_path = Path::new(&dir);
     let file_path = file_path.join(path);
 
-    let mut file = std::fs::File::open(file_path).unwrap();
+    let mut file = std::fs::File::create(file_path).unwrap();
     if file.write_all(&req.body).is_err() {
         Response::from(HttpCode::InternalServerError)
     } else {
