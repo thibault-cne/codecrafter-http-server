@@ -138,7 +138,7 @@ impl Request {
         let path = unsafe { String::from_utf8_unchecked(parts[1].to_vec()) };
         let version = HttpVersion::from(std::str::from_utf8(parts[2]).unwrap());
 
-        dbg!((method, path, version))
+        (method, path, version)
     }
 }
 
@@ -153,10 +153,10 @@ fn main() {
 
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => {
-                let req = read_stream(&mut stream.try_clone().unwrap());
+            Ok(mut stream) => {
+                let req = read_stream(&mut stream);
                 let res = router.route(req);
-                write_stream(&mut stream.try_clone().unwrap(), res.as_ref());
+                write_stream(&mut stream, res.as_ref());
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -170,13 +170,12 @@ fn ok_handler(_req: Request) -> Response {
 }
 
 fn read_stream(stream: &mut TcpStream) -> Request {
-    let mut buf = Vec::new();
+    let mut buf = [0; MAX_BUFFER_SIZE];
 
-    match stream.read_to_end(&mut buf) {
+    match stream.read(&mut buf) {
         Ok(_) => {
-            println!("{}", unsafe { std::str::from_utf8_unchecked(&buf) });
             let mut req_buf = RequestBuffer {
-                buffer: buf,
+                buffer: buf.to_vec(),
                 ptr: 0,
             };
             Request::parse(&mut req_buf)
