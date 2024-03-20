@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::iter::Peekable;
 use std::net::{TcpListener, TcpStream};
 
 const MAX_BUFFER_SIZE: usize = 2048;
@@ -122,20 +123,55 @@ where
     }
 }
 
-struct RequestBuffer {
-    buffer: Vec<u8>,
-    ptr: usize,
+struct RequestBuffer<I>
+where
+    I: Iterator<Item = u8>,
+{
+    iter: Peekable<I>,
 }
 
-impl RequestBuffer {
+impl<I> RequestBuffer<I>
+where
+    I: Iterator<Item = u8>,
+{
     fn read_until(&mut self, stop: u8, buf: &mut Vec<u8>) -> usize {
         let mut i = 0;
-        while self.ptr < self.buffer.len() && self.buffer[self.ptr] != stop {
-            buf.push(self.buffer[self.ptr]);
-            self.ptr += 1;
+        while let Some(byte) = self.iter.peek() {
+            if *byte == stop {
+                break;
+            }
+            buf.push(*byte);
+            self.iter.next();
             i += 1;
         }
         i
+    }
+
+    fn read_next_line(&mut self, buf: &mut Vec<u8>) -> usize {
+        let mut i = 0;
+        let mut last_byte = 0;
+        while let Some(&byte) = self.iter.peek() {
+            if byte == b'\n' && last_byte == b'\r' {
+                buf.pop();
+                break;
+            }
+            buf.push(byte);
+            self.iter.next();
+            last_byte = byte;
+            i += 1;
+        }
+        i
+    }
+}
+
+impl<I> From<I> for RequestBuffer<I>
+where
+    I: Iterator<Item = u8>,
+{
+    fn from(iter: I) -> Self {
+        RequestBuffer {
+            iter: iter.peekable(),
+        }
     }
 }
 
@@ -185,20 +221,29 @@ struct Request {
     method: Method,
     path: String,
     version: HttpVersion,
+    headers: HashMap<String, String>,
 }
 
 impl Request {
-    fn parse(req_buf: &mut RequestBuffer) -> Request {
+    fn parse<I>(req_buf: &mut RequestBuffer<I>) -> Request
+    where
+        I: Iterator<Item = u8>,
+    {
         let (method, path, version) = Self::parse_start_line(req_buf);
+        let headers = Self::parse_headers(req_buf);
 
         Request {
             method,
             path,
             version,
+            headers,
         }
     }
 
-    fn parse_start_line(req_buf: &mut RequestBuffer) -> (Method, String, HttpVersion) {
+    fn parse_start_line<I>(req_buf: &mut RequestBuffer<I>) -> (Method, String, HttpVersion)
+    where
+        I: Iterator<Item = u8>,
+    {
         let mut buf = Vec::new();
         req_buf.read_until(b'\r', &mut buf);
 
@@ -211,6 +256,27 @@ impl Request {
 
         (method, path, version)
     }
+
+    fn parse_headers<I>(req_buf: &mut RequestBuffer<I>) -> HashMap<String, String>
+    where
+        I: Iterator<Item = u8>,
+    {
+        let mut headers = HashMap::new();
+        let mut buf = Vec::new();
+        while req_buf.read_next_line(&mut buf) > 0 {
+            // Check for the end of the headers e.g. an empty line CRLF
+            if buf.len() == 2 {
+                break;
+            }
+            let parts = buf.split(|&c| c == b':').collect::<Vec<_>>();
+            assert_eq!(parts.len(), 2);
+            let key = unsafe { std::str::from_utf8_unchecked(parts[0]).trim().to_string() };
+            let value = unsafe { std::str::from_utf8_unchecked(parts[1]).trim().to_string() };
+            headers.insert(key, value);
+            buf.clear();
+        }
+        headers
+    }
 }
 
 fn main() {
@@ -222,6 +288,11 @@ fn main() {
 
     router.add_route(Route::new("/echo", echo_handler, CompareMethod::Prefix));
     router.add_route(Route::new("/", ok_handler, CompareMethod::Exact));
+    router.add_route(Route::new(
+        "/user-agent",
+        user_agent_handler,
+        CompareMethod::Exact,
+    ));
 
     for stream in listener.incoming() {
         match stream {
@@ -252,17 +323,25 @@ fn echo_handler(req: Request) -> Response {
     response
 }
 
+fn user_agent_handler(req: Request) -> Response {
+    let default_user_agent = "No User-Agent".to_string();
+    let user_agent = req.headers.get("User-Agent").unwrap_or(&default_user_agent);
+
+    let mut response = Response::from(HttpCode::Ok);
+    response.header("Content-Type", "text/plain");
+    response.header("Content-Length", user_agent.len().to_string());
+    response.content = user_agent.to_string();
+
+    response
+}
+
 fn read_stream(stream: &mut TcpStream) -> Request {
     let mut buf = [0; MAX_BUFFER_SIZE];
 
     match stream.read(&mut buf) {
-        Ok(_) => {
-            let mut req_buf = RequestBuffer {
-                buffer: buf.to_vec(),
-                ptr: 0,
-            };
-            Request::parse(&mut req_buf)
-        }
+        Ok(_) => Request::parse::<std::array::IntoIter<u8, 2048>>(&mut RequestBuffer::from(
+            buf.into_iter(),
+        )),
         Err(e) => {
             panic!("Failed to receive data: {}", e);
         }
