@@ -171,21 +171,11 @@ where
         i
     }
 
-    fn read_crlf(&mut self) {
-        let mut last_byte = 0;
-        while let Some(&byte) = self.iter.peek() {
-            if byte == b'\n' && last_byte == b'\r' {
-                // Consume the \n
-                self.iter.next();
-                break;
-            }
-            self.iter.next();
-            last_byte = byte;
-        }
-    }
-
     fn read_to_end(&mut self, buf: &mut Vec<u8>) {
         for byte in self.iter.by_ref() {
+            if byte == 0 {
+                break;
+            }
             buf.push(byte);
         }
     }
