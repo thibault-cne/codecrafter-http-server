@@ -128,21 +128,17 @@ impl Request {
     }
 
     fn parse_start_line(req_buf: &mut RequestBuffer) -> (Method, String, HttpVersion) {
-        let mut buf = Vec::with_capacity(MAX_BUFFER_SIZE);
-
-        req_buf.read_until(b' ', &mut buf);
-        let method = Method::from(std::str::from_utf8(&buf).unwrap());
-        buf.clear();
-
-        req_buf.read_until(b' ', &mut buf);
-        // Safe to unwrap because the buffer is guaranteed to be valid UTF-8
-        let path = unsafe { String::from_utf8_unchecked(buf.to_vec()) };
-        buf.clear();
-
+        let mut buf = Vec::new();
         req_buf.read_until(b'\r', &mut buf);
-        let version = HttpVersion::from(std::str::from_utf8(&buf).unwrap());
 
-        (method, path, version)
+        let parts = buf.split(|&c| c == b' ').collect::<Vec<_>>();
+        assert_eq!(parts.len(), 3);
+
+        let method = Method::from(std::str::from_utf8(parts[0]).unwrap());
+        let path = unsafe { String::from_utf8_unchecked(parts[1].to_vec()) };
+        let version = HttpVersion::from(std::str::from_utf8(parts[2]).unwrap());
+
+        dbg!((method, path, version))
     }
 }
 
@@ -178,6 +174,7 @@ fn read_stream(stream: &mut TcpStream) -> Request {
 
     match stream.read_to_end(&mut buf) {
         Ok(_) => {
+            println!("{}", unsafe { std::str::from_utf8_unchecked(&buf) });
             let mut req_buf = RequestBuffer {
                 buffer: buf,
                 ptr: 0,
