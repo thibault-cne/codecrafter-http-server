@@ -1,28 +1,28 @@
 use std::collections::HashMap;
-use std::io::{Read, Write};
 use std::iter::Peekable;
-use std::net::{TcpListener, TcpStream};
-
-use itertools::Itertools;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 const MAX_BUFFER_SIZE: usize = 2048;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Router {
     routes: Vec<Route>,
 }
 
+type Handler = fn(Request) -> Response;
+
+#[derive(Clone)]
 struct Route {
     path: String,
-    handler: Box<dyn Fn(Request) -> Response>,
+    handler: Box<Handler>,
     compair_method: CompareMethod,
 }
 
 impl Route {
-    fn new<S, F>(path: S, handler: F, compair_method: CompareMethod) -> Self
+    fn new<S>(path: S, handler: Handler, compair_method: CompareMethod) -> Self
     where
         S: Into<String>,
-        F: Fn(Request) -> Response + 'static,
     {
         Route {
             path: path.into(),
@@ -39,6 +39,7 @@ impl Route {
     }
 }
 
+#[derive(Clone, Copy)]
 enum CompareMethod {
     Exact,
     Prefix,
@@ -60,6 +61,7 @@ impl Router {
     }
 }
 
+#[derive(Clone, Copy)]
 enum HttpCode {
     Ok = 200,
     NotFound = 404,
@@ -76,6 +78,7 @@ impl std::fmt::Display for HttpCode {
     }
 }
 
+#[derive(Clone)]
 struct Response {
     code: HttpCode,
     content: String,
@@ -221,6 +224,7 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
 struct Request {
     method: Method,
     path: String,
@@ -283,11 +287,12 @@ impl Request {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
 
-    let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:4221").await.unwrap();
     let mut router = Router::default();
 
     router.add_route(Route::new("/echo", echo_handler, CompareMethod::Prefix));
@@ -298,17 +303,13 @@ fn main() {
         CompareMethod::Exact,
     ));
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(mut stream) => {
-                let req = read_stream(&mut stream);
-                let res = router.route(req);
-                write_stream(&mut stream, &res.into_bytes());
-            }
-            Err(e) => {
-                println!("error: {}", e);
-            }
-        }
+    while let Ok((mut stream, _)) = listener.accept().await {
+        let router = router.clone();
+        tokio::spawn(async move {
+            let req = read_stream(&mut stream).await;
+            let res = router.route(req);
+            write_stream(&mut stream, &res.into_bytes()).await;
+        });
     }
 }
 
@@ -339,10 +340,10 @@ fn user_agent_handler(req: Request) -> Response {
     response
 }
 
-fn read_stream(stream: &mut TcpStream) -> Request {
+async fn read_stream(stream: &mut TcpStream) -> Request {
     let mut buf = [0; MAX_BUFFER_SIZE];
 
-    match stream.read(&mut buf) {
+    match stream.read(&mut buf).await {
         Ok(_) => Request::parse::<std::array::IntoIter<u8, 2048>>(&mut RequestBuffer::from(
             buf.into_iter(),
         )),
@@ -352,11 +353,25 @@ fn read_stream(stream: &mut TcpStream) -> Request {
     }
 }
 
-fn write_stream(stream: &mut TcpStream, data: &[u8]) {
-    match stream.write(data) {
+async fn write_stream(stream: &mut TcpStream, data: &[u8]) {
+    match stream.write(data).await {
         Ok(_) => {}
         Err(e) => {
             println!("Failed to send data: {}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+
+    #[test]
+    fn test_send_sync() {
+        assert_send::<Router>();
+        assert_sync::<Router>();
     }
 }
