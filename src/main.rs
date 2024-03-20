@@ -3,6 +3,8 @@ use std::io::{Read, Write};
 use std::iter::Peekable;
 use std::net::{TcpListener, TcpStream};
 
+use itertools::Itertools;
+
 const MAX_BUFFER_SIZE: usize = 2048;
 
 #[derive(Default)]
@@ -266,11 +268,14 @@ impl Request {
         let mut headers = HashMap::new();
         let mut buf = Vec::new();
         while req_buf.read_next_line(&mut buf) > 0 && buf.len() > 2 {
-            let mid = buf.iter().position(|&c| c == b':').unwrap();
-            let (key, value) = buf.split_at(mid);
+            let parts = buf.split(|&b| b == b':').collect::<Vec<_>>();
+            assert!(parts.len() >= 2);
+
+            let key = parts[0];
+            let value = parts[1..].concat();
 
             let key = unsafe { std::str::from_utf8_unchecked(key).trim().to_string() };
-            let value = unsafe { std::str::from_utf8_unchecked(value).trim().to_string() };
+            let value = unsafe { std::str::from_utf8_unchecked(&value).trim().to_string() };
             headers.insert(key, value);
             buf.clear();
         }
