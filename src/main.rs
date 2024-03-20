@@ -57,15 +57,11 @@ struct RequestBuffer {
 }
 
 impl RequestBuffer {
-    fn read_until(&mut self, stop: u8, buf: &mut [u8]) -> usize {
+    fn read_until(&mut self, stop: u8, buf: &mut Vec<u8>) -> usize {
         let mut i = 0;
-        while self.ptr < self.buffer.len() {
-            let byte = self.buffer[self.ptr];
+        while self.ptr < self.buffer.len() && self.buffer[self.ptr] != stop {
+            buf.push(self.buffer[self.ptr]);
             self.ptr += 1;
-            if byte == stop {
-                break;
-            }
-            buf[i] = byte;
             i += 1;
         }
         i
