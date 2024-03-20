@@ -242,7 +242,7 @@ fn ok_handler(_req: Request) -> Response {
 }
 
 fn echo_handler(req: Request) -> Response {
-    let response_content = req.path.strip_prefix("/echo").unwrap_or_default();
+    let response_content = req.path.strip_prefix("/echo/").unwrap_or_default();
 
     let mut response = Response::from(HttpCode::Ok);
     response.header("Content-Type", "text/plain");
