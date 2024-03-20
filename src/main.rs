@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(clippy::upper_case_acronyms)]
+
 use std::collections::HashMap;
 use std::io::Read;
 use std::iter::Peekable;
