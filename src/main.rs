@@ -351,6 +351,12 @@ async fn main() {
         compare_path: ComparePath::Prefix,
         method: vec![Method::GET],
     });
+    router.add_route(Route {
+        path: "/files".into(),
+        handler: Box::new(post_file_handler),
+        compare_path: ComparePath::Prefix,
+        method: vec![Method::POST],
+    });
 
     while let Ok((mut stream, _)) = listener.accept().await {
         let router = router.clone();
@@ -418,13 +424,15 @@ fn get_file_handler(req: Request) -> Response {
     }
 }
 
-fn pose_file_handler(req: Request) -> Response {
+fn post_file_handler(req: Request) -> Response {
     let dir = std::env::args().nth(2).unwrap();
     let path = req.path.strip_prefix("/files/").unwrap_or_default();
     let file_path = Path::new(&dir);
     let file_path = file_path.join(path);
 
     let mut file = std::fs::File::create(file_path).unwrap();
+
+    println!("{:?}", unsafe { std::str::from_utf8_unchecked(&req.body) });
     if file.write_all(&req.body).is_err() {
         Response::from(HttpCode::InternalServerError)
     } else {
