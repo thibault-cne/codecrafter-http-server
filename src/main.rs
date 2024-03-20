@@ -178,12 +178,12 @@ fn ok_handler(_req: Request) -> Response {
 }
 
 fn read_stream(stream: &mut TcpStream) -> Request {
-    let mut buf = [0; MAX_BUFFER_SIZE];
+    let mut buf = Vec::new();
 
-    match stream.read(&mut buf) {
+    match stream.read_to_end(&mut buf) {
         Ok(_) => {
             let mut req_buf = RequestBuffer {
-                buffer: buf.to_vec(),
+                buffer: buf,
                 ptr: 0,
             };
             Request::parse(&mut req_buf)
