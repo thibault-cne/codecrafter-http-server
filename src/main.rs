@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::iter::Peekable;
+use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -81,7 +83,7 @@ impl std::fmt::Display for HttpCode {
 #[derive(Clone)]
 struct Response {
     code: HttpCode,
-    content: String,
+    content: Vec<u8>,
     headers: HashMap<String, String>,
 }
 
@@ -94,14 +96,15 @@ impl Response {
         self.headers.insert(key.into(), value.into());
     }
 
-    fn into_bytes(self) -> Vec<u8> {
-        let mut buf = format!("HTTP/1.1 {}\r\n", self.code);
+    fn into_bytes(mut self) -> Vec<u8> {
+        let mut buf = format!("HTTP/1.1 {}\r\n", self.code).into_bytes();
         for (key, value) in self.headers {
-            buf.push_str(&format!("{}: {}\r\n", key, value));
+            let mut header = format!("{}: {}\r\n", key, value).into_bytes();
+            buf.append(&mut header);
         }
-        buf.push_str("\r\n");
-        buf.push_str(&self.content);
-        buf.into_bytes()
+        buf.append(&mut b"\r\n".to_vec());
+        buf.append(&mut self.content);
+        buf
     }
 }
 
@@ -109,17 +112,17 @@ impl From<HttpCode> for Response {
     fn from(code: HttpCode) -> Self {
         Response {
             code,
-            content: String::new(),
+            content: Vec::new(),
             headers: HashMap::new(),
         }
     }
 }
 
-impl<S> From<S> for Response
+impl<C> From<C> for Response
 where
-    S: Into<String>,
+    C: Into<Vec<u8>>,
 {
-    fn from(value: S) -> Self {
+    fn from(value: C) -> Self {
         Response {
             code: HttpCode::Ok,
             content: value.into(),
@@ -302,6 +305,11 @@ async fn main() {
         user_agent_handler,
         CompareMethod::Exact,
     ));
+    router.add_route(Route::new(
+        "/files",
+        get_file_handler,
+        CompareMethod::Prefix,
+    ));
 
     while let Ok((mut stream, _)) = listener.accept().await {
         let router = router.clone();
@@ -323,21 +331,50 @@ fn echo_handler(req: Request) -> Response {
     let mut response = Response::from(HttpCode::Ok);
     response.header("Content-Type", "text/plain");
     response.header("Content-Length", response_content.len().to_string());
-    response.content = response_content.to_string();
+    response.content = response_content.into();
 
     response
 }
 
 fn user_agent_handler(req: Request) -> Response {
     let default_user_agent = "No User-Agent".to_string();
-    let user_agent = req.headers.get("User-Agent").unwrap_or(&default_user_agent);
+    let user_agent = req
+        .headers
+        .get("User-Agent")
+        .unwrap_or(&default_user_agent)
+        .clone();
 
     let mut response = Response::from(HttpCode::Ok);
     response.header("Content-Type", "text/plain");
     response.header("Content-Length", user_agent.len().to_string());
-    response.content = user_agent.to_string();
+    response.content = user_agent.into_bytes();
 
     response
+}
+
+fn get_file_handler(req: Request) -> Response {
+    let dir = std::env::args().nth(2).unwrap();
+    let path = req.path.strip_prefix("/files/").unwrap_or_default();
+    let file_path = Path::new(&dir);
+    let file_path = file_path.join(path);
+
+    if file_path.metadata().is_err() {
+        Response::from(HttpCode::NotFound)
+    } else {
+        let mut file = std::fs::File::open(&file_path).unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        // Respond with application/octet-stream
+        let mut response = Response::from(HttpCode::Ok);
+        response.header("Content-Type", "application/octet-stream");
+        response.header(
+            "Content-Length",
+            file_path.metadata().unwrap().len().to_string(),
+        );
+        response.content = content;
+        response
+    }
 }
 
 async fn read_stream(stream: &mut TcpStream) -> Request {
