@@ -21,7 +21,7 @@ impl Router {
     fn route(&self, req: Request) -> Response {
         let mut response = Response::from("HTTP/1.1 404 Not Found\r\n\r\n");
         for (path, handler) in self.routes.iter() {
-            if req.path.starts_with(path) {
+            if req.path.as_str() == path.as_str() {
                 response = handler(req);
                 break;
             }
