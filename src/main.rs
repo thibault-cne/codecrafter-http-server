@@ -6,37 +6,106 @@ const MAX_BUFFER_SIZE: usize = 2048;
 
 #[derive(Default)]
 struct Router {
-    routes: HashMap<String, Box<dyn Fn(Request) -> Response>>,
+    routes: Vec<Route>,
 }
 
-impl Router {
-    fn add_route<S, F>(&mut self, path: S, handler: F)
+struct Route {
+    path: String,
+    handler: Box<dyn Fn(Request) -> Response>,
+    compair_method: CompareMethod,
+}
+
+impl Route {
+    fn new<S, F>(path: S, handler: F, compair_method: CompareMethod) -> Self
     where
         S: Into<String>,
         F: Fn(Request) -> Response + 'static,
     {
-        self.routes.insert(path.into(), Box::new(handler));
+        Route {
+            path: path.into(),
+            handler: Box::new(handler),
+            compair_method,
+        }
+    }
+
+    fn matches(&self, req: &Request) -> bool {
+        match self.compair_method {
+            CompareMethod::Exact => self.path == req.path,
+            CompareMethod::Prefix => req.path.starts_with(&self.path),
+        }
+    }
+}
+
+enum CompareMethod {
+    Exact,
+    Prefix,
+}
+
+impl Router {
+    fn add_route(&mut self, route: Route) {
+        self.routes.push(route);
     }
 
     fn route(&self, req: Request) -> Response {
-        let mut response = Response::from("HTTP/1.1 404 Not Found\r\n\r\n");
-        for (path, handler) in self.routes.iter() {
-            if req.path.as_str() == path.as_str() {
-                response = handler(req);
-                break;
-            }
+        let mut response = Response::from(HttpCode::NotFound);
+
+        if let Some(route) = self.routes.iter().find(|route| route.matches(&req)) {
+            response = (route.handler)(req);
         }
+
         response
     }
 }
 
-struct Response {
-    content: String,
+enum HttpCode {
+    Ok = 200,
+    NotFound = 404,
 }
 
-impl AsRef<[u8]> for Response {
-    fn as_ref(&self) -> &[u8] {
-        self.content.as_bytes()
+impl std::fmt::Display for HttpCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        use HttpCode::*;
+
+        match self {
+            Ok => write!(f, "200 OK"),
+            NotFound => write!(f, "404 Not Found"),
+        }
+    }
+}
+
+struct Response {
+    code: HttpCode,
+    content: String,
+    headers: HashMap<String, String>,
+}
+
+impl Response {
+    fn header<K, V>(&mut self, key: K, value: V)
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.headers.insert(key.into(), value.into());
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        let mut buf = format!("HTTP/1.1 {}\r\n", self.code);
+        for (key, value) in self.headers {
+            buf.push_str(&format!("{}: {}\r\n", key, value));
+        }
+        buf.push_str("\r\n");
+        buf.push_str(&self.content);
+        buf.into_bytes()
+    }
+}
+
+impl From<HttpCode> for Response {
+    fn from(code: HttpCode) -> Self {
+        Response {
+            code,
+            content: String::new(),
+            headers: HashMap::new(),
+        }
     }
 }
 
@@ -46,7 +115,9 @@ where
 {
     fn from(value: S) -> Self {
         Response {
+            code: HttpCode::Ok,
             content: value.into(),
+            headers: HashMap::new(),
         }
     }
 }
@@ -149,14 +220,15 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
     let mut router = Router::default();
 
-    router.add_route("/", ok_handler);
+    router.add_route(Route::new("/echo", echo_handler, CompareMethod::Prefix));
+    router.add_route(Route::new("/", ok_handler, CompareMethod::Exact));
 
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
                 let req = read_stream(&mut stream);
                 let res = router.route(req);
-                write_stream(&mut stream, res.as_ref());
+                write_stream(&mut stream, &res.into_bytes());
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -166,7 +238,18 @@ fn main() {
 }
 
 fn ok_handler(_req: Request) -> Response {
-    Response::from("HTTP/1.1 200 OK\r\n\r\n")
+    Response::from(HttpCode::Ok)
+}
+
+fn echo_handler(req: Request) -> Response {
+    let response_content = req.path.strip_prefix("/echo").unwrap_or_default();
+
+    let mut response = Response::from(HttpCode::Ok);
+    response.header("Content-Type", "text/plain");
+    response.header("Content-Lenght", response_content.len().to_string());
+    response.content = response_content.to_string();
+
+    response
 }
 
 fn read_stream(stream: &mut TcpStream) -> Request {
