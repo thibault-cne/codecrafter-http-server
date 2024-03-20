@@ -2,7 +2,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::iter::Peekable;
 use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -21,31 +21,22 @@ type Handler = fn(Request) -> Response;
 struct Route {
     path: String,
     handler: Box<Handler>,
-    compair_method: CompareMethod,
+    compare_path: ComparePath,
+    method: Vec<Method>,
 }
 
 impl Route {
-    fn new<S>(path: S, handler: Handler, compair_method: CompareMethod) -> Self
-    where
-        S: Into<String>,
-    {
-        Route {
-            path: path.into(),
-            handler: Box::new(handler),
-            compair_method,
-        }
-    }
-
     fn matches(&self, req: &Request) -> bool {
-        match self.compair_method {
-            CompareMethod::Exact => self.path == req.path,
-            CompareMethod::Prefix => req.path.starts_with(&self.path),
-        }
+        let path_bool = match self.compare_path {
+            ComparePath::Exact => self.path == req.path,
+            ComparePath::Prefix => req.path.starts_with(&self.path),
+        };
+        path_bool && self.method.contains(&req.method)
     }
 }
 
 #[derive(Clone, Copy)]
-enum CompareMethod {
+enum ComparePath {
     Exact,
     Prefix,
 }
@@ -70,6 +61,8 @@ impl Router {
 enum HttpCode {
     Ok = 200,
     NotFound = 404,
+    Created = 201,
+    InternalServerError = 500,
 }
 
 impl std::fmt::Display for HttpCode {
@@ -79,6 +72,8 @@ impl std::fmt::Display for HttpCode {
         match self {
             Ok => write!(f, "200 OK"),
             NotFound => write!(f, "404 Not Found"),
+            Created => write!(f, "201 Created"),
+            InternalServerError => write!(f, "500 Internal Server Error"),
         }
     }
 }
@@ -175,6 +170,25 @@ where
         }
         i
     }
+
+    fn read_crlf(&mut self) {
+        let mut last_byte = 0;
+        while let Some(&byte) = self.iter.peek() {
+            if byte == b'\n' && last_byte == b'\r' {
+                // Consume the \n
+                self.iter.next();
+                break;
+            }
+            self.iter.next();
+            last_byte = byte;
+        }
+    }
+
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) {
+        for byte in self.iter.by_ref() {
+            buf.push(byte);
+        }
+    }
 }
 
 impl<I> From<I> for RequestBuffer<I>
@@ -236,6 +250,7 @@ struct Request {
     path: String,
     version: HttpVersion,
     headers: HashMap<String, String>,
+    body: Vec<u8>,
 }
 
 impl Request {
@@ -245,12 +260,14 @@ impl Request {
     {
         let (method, path, version) = Self::parse_start_line(req_buf);
         let headers = Self::parse_headers(req_buf);
+        let body = Self::parse_body(req_buf);
 
         Request {
             method,
             path,
             version,
             headers,
+            body,
         }
     }
 
@@ -291,6 +308,15 @@ impl Request {
         }
         headers
     }
+
+    fn parse_body<I>(req_buf: &mut RequestBuffer<I>) -> Vec<u8>
+    where
+        I: Iterator<Item = u8>,
+    {
+        let mut body = Vec::new();
+        req_buf.read_to_end(&mut body);
+        body
+    }
 }
 
 #[tokio::main]
@@ -301,18 +327,30 @@ async fn main() {
     let listener = TcpListener::bind("127.0.0.1:4221").await.unwrap();
     let mut router = Router::default();
 
-    router.add_route(Route::new("/echo", echo_handler, CompareMethod::Prefix));
-    router.add_route(Route::new("/", ok_handler, CompareMethod::Exact));
-    router.add_route(Route::new(
-        "/user-agent",
-        user_agent_handler,
-        CompareMethod::Exact,
-    ));
-    router.add_route(Route::new(
-        "/files",
-        get_file_handler,
-        CompareMethod::Prefix,
-    ));
+    router.add_route(Route {
+        path: "/echo".into(),
+        handler: Box::new(echo_handler),
+        compare_path: ComparePath::Prefix,
+        method: vec![Method::GET],
+    });
+    router.add_route(Route {
+        path: "/".into(),
+        handler: Box::new(ok_handler),
+        compare_path: ComparePath::Exact,
+        method: vec![Method::GET],
+    });
+    router.add_route(Route {
+        path: "/user-agent".into(),
+        handler: Box::new(user_agent_handler),
+        compare_path: ComparePath::Exact,
+        method: vec![Method::GET],
+    });
+    router.add_route(Route {
+        path: "/files".into(),
+        handler: Box::new(get_file_handler),
+        compare_path: ComparePath::Prefix,
+        method: vec![Method::GET],
+    });
 
     while let Ok((mut stream, _)) = listener.accept().await {
         let router = router.clone();
@@ -377,6 +415,20 @@ fn get_file_handler(req: Request) -> Response {
         );
         response.content = content;
         response
+    }
+}
+
+fn pose_file_handler(req: Request) -> Response {
+    let dir = std::env::args().nth(2).unwrap();
+    let path = req.path.strip_prefix("/files/").unwrap_or_default();
+    let file_path = Path::new(&dir);
+    let file_path = file_path.join(path);
+
+    let mut file = std::fs::File::open(file_path).unwrap();
+    if file.write_all(&req.body).is_err() {
+        Response::from(HttpCode::InternalServerError)
+    } else {
+        Response::from(HttpCode::Created)
     }
 }
 
