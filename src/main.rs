@@ -246,7 +246,7 @@ fn echo_handler(req: Request) -> Response {
 
     let mut response = Response::from(HttpCode::Ok);
     response.header("Content-Type", "text/plain");
-    response.header("Content-Lenght", response_content.len().to_string());
+    response.header("Content-Length", response_content.len().to_string());
     response.content = response_content.to_string();
 
     response
