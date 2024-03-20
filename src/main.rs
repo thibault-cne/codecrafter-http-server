@@ -153,6 +153,8 @@ where
         while let Some(&byte) = self.iter.peek() {
             if byte == b'\n' && last_byte == b'\r' {
                 buf.pop();
+                // Consume the \n
+                self.iter.next();
                 break;
             }
             buf.push(byte);
@@ -245,7 +247,7 @@ impl Request {
         I: Iterator<Item = u8>,
     {
         let mut buf = Vec::new();
-        req_buf.read_until(b'\r', &mut buf);
+        req_buf.read_next_line(&mut buf);
 
         let parts = buf.split(|&c| c == b' ').collect::<Vec<_>>();
         assert_eq!(parts.len(), 3);
@@ -263,15 +265,12 @@ impl Request {
     {
         let mut headers = HashMap::new();
         let mut buf = Vec::new();
-        while req_buf.read_next_line(&mut buf) > 0 {
-            // Check for the end of the headers e.g. an empty line CRLF
-            if buf.len() == 2 {
-                break;
-            }
-            let parts = buf.split(|&c| c == b':').collect::<Vec<_>>();
-            assert_eq!(parts.len(), 2);
-            let key = unsafe { std::str::from_utf8_unchecked(parts[0]).trim().to_string() };
-            let value = unsafe { std::str::from_utf8_unchecked(parts[1]).trim().to_string() };
+        while req_buf.read_next_line(&mut buf) > 0 && buf.len() > 2 {
+            let mid = buf.iter().position(|&c| c == b':').unwrap();
+            let (key, value) = buf.split_at(mid);
+
+            let key = unsafe { std::str::from_utf8_unchecked(key).trim().to_string() };
+            let value = unsafe { std::str::from_utf8_unchecked(value).trim().to_string() };
             headers.insert(key, value);
             buf.clear();
         }
